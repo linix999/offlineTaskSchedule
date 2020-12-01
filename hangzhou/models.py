@@ -41,9 +41,23 @@ class MovieOfflineData(models.Model):
     url = models.CharField(max_length=2000)
     checkdate = models.CharField(max_length=20)
     tag = models.CharField(max_length=20)
+    code=models.IntegerField()
+    ishz = models.IntegerField()
+    detailStatus=models.IntegerField()
     createTime = models.DateTimeField(db_column='createTime', blank=True, null=True)
 
     class Meta:
         managed = True
         app_label="hangzhou"
         db_table = 'movie_online_check'
+
+class VideoDetailsData(models.Model):
+    id=models.IntegerField(primary_key=True)
+    platform = models.CharField(max_length=255)
+    url = models.CharField(max_length=500)
+    status=models.IntegerField()
+
+    class Meta:
+        managed = True
+        app_label="hangzhou"
+        db_table = 'weibo_url_searchspider'

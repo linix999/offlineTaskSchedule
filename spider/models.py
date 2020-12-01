@@ -12,6 +12,7 @@ SPIDER_TYPE = (
     (0, '影视爬虫'),
     (1, '音乐爬虫'),
     (2, '影视下线验证爬虫'),
+    (3, '其他爬虫'),
 )
 
 class Spider(models.Model):
