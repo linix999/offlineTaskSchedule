@@ -12,12 +12,16 @@ from celery.task import task,periodic_task
 from celery.schedules import crontab
 from scrapyd_api import ScrapydAPI
 from .models import Spider
-from hangzhou.models import MovieCrawlState,MusicCrawlState,MovieOfflineData,VideoDetailsData
+from hangzhou.models import MovieCrawlState,MusicCrawlState,MovieOfflineData,VideoDetailsData,derivativeSearchWordData
 from django.conf import settings
 from django.db.models import Q
+from twilio.rest import Client
 
 scrapydBatchSize=16
 maxBatchCheckNums=256
+
+proxyPoolServer=redis.Redis(host=settings.IP_POOL_REDIS_HOST,port=settings.IP_POOL_REDIS_PORT,password=settings.IP_POOL_REDIS_PWD,decode_responses=True)
+smssMessageSetKey='SMSS:MessageSet'
 
 @task()
 def add(x,y):
@@ -49,7 +53,11 @@ def getRunServer(deployProject='offlineCheckSpiders'):
 def setDeParams(dictPara):
     fields=dictPara.get('filterFields',{})
     spiderName=dictPara.get('spider_name',"")
-    spiderObjs = Spider.objects.get(Q(name__exact=spiderName),Q(status__exact=0))
+    try:
+        spiderObjs = Spider.objects.get(Q(name__exact=spiderName),Q(status__exact=0))
+    except:
+        print("test mysql server is crashed")
+        proxyPoolServer.sadd(smssMessageSetKey,"103.205.7.13上mysql服务器出现异常。")
     proxyType=dictPara.get("proxyType","0")
     batchCheckNums=int(dictPara.get("batchCheckNums","1"))
     if batchCheckNums>maxBatchCheckNums:
@@ -76,9 +84,6 @@ def commonSchedule(type,catagery,isChangeScheduleStatus):
 
     if catagery!=1:
         results=results[:(len(settings.SCRAPYD_URLS)*scrapydBatchSize)]
-
-    if len(results):
-        addProxyWhiteList()
 
     for item in results:
         try:
@@ -154,7 +159,9 @@ def addProxyWhiteList():
 def videoGetDetailsTaskSchedule():
     platformInfo={
         '哔哩哔哩视频':'bilibiliDetailInfo',
-        '今日头条':'xiguaDetailInfo',
+        '西瓜视频': 'xiguaDetailedInfo',    #因前面爬虫用了较好的名字，这个爬虫爬取西瓜系列较完整的信息
+        '今日头条': 'xiguaDetailedInfo',
+        '今日头条_点赞数':'xiguaDetailInfo',       #仅补充点赞量
     }
     batchCheckNums=64
     extraParams={
@@ -162,10 +169,10 @@ def videoGetDetailsTaskSchedule():
     }
     extraParams = json.dumps(extraParams, ensure_ascii=False, separators=(',', ':'))
     for k,v in platformInfo.items():
-        if k=='哔哩哔哩视频':
+        if k=='哔哩哔哩视频' or k=='西瓜视频' or k=='今日头条':
             records=VideoDetailsData.objects.filter(platform__exact=k).filter(status__exact=2)
-        elif k=='今日头条':
-            records=MovieOfflineData.objects.filter(platform__exact=k).filter(ishz__exact=1).filter(detailStatus__exact=0).filter(tag__in=['待处理','未下线'])
+        elif k=='今日头条_点赞数':
+            records=MovieOfflineData.objects.filter(platform__exact='今日头条').filter(ishz__exact=1).filter(detailStatus__exact=0).filter(tag__in=['待处理','未下线'])
         else:
             records=[]
         spider = Spider.objects.get(Q(name__exact=v), Q(status__exact=0))
@@ -192,10 +199,53 @@ def videoGetDetailsTaskSchedule():
                 j += 1
             m += 1
 
+def derivativeSearchWordTaskSchedule():
+    derivativeSearchWordSpidersInfo={
+        '西瓜头条系列':'derivativeSearchWord',
+    }
+    extraParams={
+        'proxytype':'1',
+    }
+    extraParams = json.dumps(extraParams, ensure_ascii=False, separators=(',', ':'))
+    for k,v in derivativeSearchWordSpidersInfo.items():
+        if k=='西瓜头条系列':
+            records = derivativeSearchWordData.objects.all()
+        else:
+            records=[]
+        spider = Spider.objects.get(Q(name__exact=v), Q(status__exact=0))
+        deployProject = spider.deployProject
+        for record in records:
+            scheduleServer = getRunServer(deployProject)
+
+            if scheduleServer:
+                scrapyd = ScrapydAPI(scheduleServer, timeout=8)
+                status = scrapyd.schedule(project=deployProject, spider=spider.name, dbId=record.id,keyword=record.name, extraParams=extraParams)
+                print(status)
+
+def sendSmssMessage():
+    account_sid = 'AC7e3882dd363fb5c60e9f8bbad32d15b3'
+    auth_token = 'db3d2fa49c741c66f052ed2bbfcaedca'
+    client = Client(account_sid, auth_token)
+    while proxyPoolServer.scard(smssMessageSetKey)>0:
+        text = proxyPoolServer.spop(smssMessageSetKey)
+        if text:
+            try:
+                message = client.messages.create(
+                    to="+8615356634331",  # 接受短信的手机号 注意写中国区号 +86
+                    from_="+12517664668",  # api参数 Number(领取的虚拟号码
+                    body="\n系统发送程序运行日志：\n——"+text)  # 自定义短信内容
+            except BaseException as e:
+                print("发送短信失败。")
+
 @periodic_task(run_every=3)
 def sheduleCustomerTask(**kwargs):
     commonSchedule(2,0,isChangeScheduleStatus=True) #影视机动下线任务
     #commonSchedule(3,0,isChangeScheduleStatus=True) #音乐机动下线任务
+    return True
+
+@periodic_task(run_every=crontab(minute=1,hour=0))
+def sheduleEverydayInitTask(**kwargs):
+    addProxyWhiteList()
     return True
 
 @periodic_task(run_every=crontab(minute=0,hour=18))
@@ -207,4 +257,14 @@ def sheduleUserTask(**kwargs):
 @periodic_task(run_every=1800)
 def sheduleVideoDetailInfoTask(**kwargs):
     videoGetDetailsTaskSchedule() #获取视频详细信息任务
+    return True
+
+@periodic_task(run_every=604800)    #604800
+def derivativeSearchWordTask(**kwargs):
+    derivativeSearchWordTaskSchedule() #更新衍生搜索词任务,一周一次
+    return True
+
+@periodic_task(run_every=3600)
+def sendSmssMessageTask(**kwargs):
+    sendSmssMessage()
     return True

@@ -61,3 +61,13 @@ class VideoDetailsData(models.Model):
         managed = True
         app_label="hangzhou"
         db_table = 'weibo_url_searchspider'
+
+class derivativeSearchWordData(models.Model):
+    id=models.IntegerField(primary_key=True)
+    name = models.CharField(max_length=255)
+    sId=models.IntegerField()
+
+    class Meta:
+        managed = True
+        app_label="hangzhou"
+        db_table = 'video_search_word'
